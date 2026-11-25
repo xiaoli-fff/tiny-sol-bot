@@ -1,11 +1,16 @@
 // Tiny SOL bot: a bounce-aware EMA crossover, long only.
 //
+// v2 (2026-11-25): RSI_ENTRY_MAX 55 -> 58, nothing else changed. v1's 16
+// dev trades scale to ~8-9 on the 72-bar final window, too close to the
+// 8-trade guardrail; 58 was measured at 24 dev trades, net PnL -147.53
+// USDC vs buy-and-hold -869.34 USDC.
+//
 // Idea, in one paragraph: the dev window falls hard (buy-and-hold loses ~8.7%),
 // so the money is in staying out of downtrends and only buying the turn. Per
 // symbol I track EMA(8) and EMA(21) over hourly closes plus a Wilder RSI(14).
 // I enter when EMA(8) crosses above EMA(21) on a bar's close, but only when
 // the close is already above EMA(21) (the trend has actually turned, not just
-// wiggled) and RSI(14) is under 40 (the symbol is oversold and only just
+// wiggled) and RSI(14) is under 58 (the symbol is oversold and only just
 // turning: buy the dip, not a bounce that has already run). I exit
 // the whole position when EMA(8) crosses back under EMA(21), or when the
 // position is worth 15% over its cost (bank the small bounce fast), or 10%
@@ -16,6 +21,17 @@
 // capped by the 25% max weight and by the cash on hand; sells go first in
 // each reply. Orders fill at the next bar's open, so every decision is made
 // on closes only.
+//
+// Why the RSI cap is 58, not tighter: the final window is only 72 hourly
+// bars, and the guardrail needs at least 8 trades there or the entry ranks
+// below every entry that meets it. The v1 cap of 55 gave only 16 trades on
+// the 136-bar dev window, which scales to roughly 8-9 trades on the final
+// window — too close to the 8-trade floor to trust. Loosening the cap to 58
+// was measured on the dev window at 24 trades with net PnL -147.53 USDC,
+// still far above the buy-and-hold baseline of -869.34 USDC, so the extra
+// entries buy trade-count headroom without giving up the edge. All other
+// parameters (EMA 8/21, +15% take profit, -10% stop loss, 6-bar stop
+// cooldown, equal equity/7 slices, 25% max weight) are unchanged from v1.
 //
 // Determinism: float64 arithmetic on + - * / alone, no clock, no environment,
 // no randomness, so two runs produce the same orders. A bar with zero volume
@@ -33,9 +49,13 @@ const RSI_BARS = 14;
 /** Only enter while RSI(14) is under this: buy the turn before the bounce
  *  has run far. (RSI under 40-45 at the exact cross bar almost never
  *  happens: the rise that makes EMA(8) cross EMA(21) already lifts RSI, so
- *  a tight cap trades nothing. 55 keeps the filter meaningful without
- *  choking entries off.) */
-const RSI_ENTRY_MAX = 55;
+ *  a tight cap trades nothing. 55 kept the filter meaningful without
+ *  choking entries off, but on the 136-bar dev window it gave only 16
+ *  trades — about 8-9 scaled to the 72-bar final window, right on the
+ *  8-trade guardrail. 58 was measured at 24 dev trades, net PnL -147.53
+ *  USDC vs buy-and-hold -869.34 USDC, so it buys trade-count headroom
+ *  while keeping the filter meaningful.) */
+const RSI_ENTRY_MAX = 58;
 /** Take profit: worth 23/20 of its cost (+15%: bank the small bounce fast,
  *  hourly moves in a 3-day window rarely run to +40%). */
 const TAKE_PROFIT = [23n, 20n] as const;
@@ -182,7 +202,10 @@ await runBars({
         }
       } else if (crossUp.has(symbol)) {
         // The cross-up itself is the turn signal; RSI must not be overbought
-        // (null RSI, not seeded yet, does not block).
+        // (null RSI, not seeded yet, does not block). This RSI gate is the
+        // trade-count lever for v2: the 58 cap (up from 55) is what keeps
+        // entries frequent enough to clear the 8-trade guardrail on the
+        // short 72-bar final window.
         if (s.rsiValue !== null && s.rsiValue >= RSI_ENTRY_MAX) continue;
         const stopped = stoppedAt.get(symbol);
         if (stopped !== undefined && state.seq - stopped < STOP_COOLDOWN_BARS) continue;
